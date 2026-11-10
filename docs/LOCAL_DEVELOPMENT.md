@@ -67,3 +67,16 @@ Windows 后续验收建议（在未来获得用户同意使用的 Windows 环境
 3. 以可测试账号下载单文件和含多页/子目录/空目录的文件夹，核对计数、结构及内容。
 4. 预先放入同名文件，确认不会覆盖；下载中暂停/继续/删除、退出账号，检查队列和半成品。
 5. 在不可写目录、网络中断和服务端错误场景中确认错误可见、UI 不冻结。
+
+
+## Windows x64 测试兼容性修复
+
+- 使用官方校验过的独立 Linux SDK Flutter 3.44.7 / Dart 3.12.2（与 Windows CI 相同），未改共享旧 SDK。
+- 在改代码前，用此 SDK 复现了原有 3 个 UI 测试的 `ListTile` / `ColoredBox` 断言；替换列表背景 `Container` 为 `Material` 后消失。没有忽略异常或删除测试。
+- `DownloadManager.add` 现在是需要等待的异步入队方法：先解析用户选择的目录别名，捕获 canonical 根目录，再加入队列；`FolderDownload` 相应等待入队。账号在解析期间切换时拒绝旧任务。
+- canonical 根目录在排队后保持不变，任务启动和清理前再次核验，根目录被换成链接时不能重新绑定到新目标；子目录的链接/联接、越界路径仍被拒绝。
+- 新增可注入路径解析器和 Windows 路径上下文的回归测试：8.3 别名、驱动器大小写和分隔符、长路径前缀、UNC、不同盘符、相似前缀、`..`、相对根路径、内部/外部 junction 及根目录替换；另有真实本地链接和排队后替换测试。
+- 测试临时目录和目标目录统一 canonical；FakeDrive 提供实际进入下载的启动事件，替代固定 20ms 暂停。等待保留 10 秒有界超时，失败附带任务状态、错误和路径，便于 Windows 排查，不是无限等待或放宽预期。
+- 新 SDK 下 `flutter analyze --no-pub` 无问题，完整 `flutter test --no-pub --reporter expanded` 共 40 项通过。所有原 31 项仍执行，没有 skip。
+- 本地复现了 UI 原因及路径别名导致旧检查误拒绝的机制，但没有 Windows 本机；原日志没有实际 short/long 路径对照，具体路径别名种类仍需由新的 x64 CI 证实。Linux 上的 Windows 风格注入测试不等于原生 Windows 验证。
+- 未修改 `.github/workflows/build-windows.yml`；授权后触发它仍会运行 x64 和 ARM64 矩阵。目标 x64 制品是包含 exe 和依赖的 ZIP，不是 MSI/安装向导。

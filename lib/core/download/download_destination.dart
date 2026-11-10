@@ -37,9 +37,7 @@ class DownloadDestination {
     Iterable<String> reserved = const [],
   }) async {
     await Directory(path).create(recursive: true);
-    final destination = DownloadDestination._(
-      await Directory(path).resolveSymbolicLinks(),
-    );
+    final destination = DownloadDestination._(await canonicalDirectory(path));
     destination._reserved.addAll(reserved.map((e) => e.toLowerCase()));
     return destination;
   }
@@ -88,14 +86,77 @@ class DownloadDestination {
     return _existingNames[parent] = names;
   }
 
-  /// Check containment and reject links/junctions introduced below the chosen root.
-  static Future<void> validateDirectory(String root, String directory) async {
-    if (!p.equals(root, directory) && !p.isWithin(root, directory)) {
-      throw FileSystemException('下载路径超出目标目录', directory);
+  /// Canonicalize a user-selected root ONCE before creating tasks. Windows may
+  /// expand a short 8.3 path; that is not evidence of a symlink below the root.
+  static Future<String> canonicalDirectory(
+    String directory, {
+    p.Context? context,
+    Future<String> Function(String)? resolve,
+  }) async {
+    final normalized = normalizePath(directory, context: context);
+    final resolved = await (resolve ?? _resolveDirectory)(normalized);
+    return normalizePath(resolved, context: context);
+  }
+
+  static Future<String> _resolveDirectory(String directory) =>
+      Directory(directory).resolveSymbolicLinks();
+
+  /// Strip only equivalent Windows long-path namespace spellings, never use a
+  /// string prefix check for containment (C:\safe2 is not inside C:\safe).
+  static String normalizePath(String path, {p.Context? context}) {
+    final paths = context ?? p.context;
+    if (paths.style == p.Style.windows) {
+      if (path.toUpperCase().startsWith(r'\\?\UNC\')) {
+        path = r'\\' + path.substring(8);
+      } else if (path.startsWith(r'\\?\') &&
+          RegExp(r'^[a-zA-Z]:[\\/]').hasMatch(path.substring(4))) {
+        path = path.substring(4);
+      }
     }
-    final resolved = await Directory(directory).resolveSymbolicLinks();
-    if (!p.equals(p.normalize(resolved), p.normalize(directory))) {
-      throw FileSystemException('下载子目录不能是符号链接或联接', directory);
+    if (!paths.isAbsolute(path) || paths.isRootRelative(path)) {
+      throw FileSystemException('下载目录必须是绝对路径', path);
+    }
+    return paths.normalize(path);
+  }
+
+  /// [root] is an immutable canonical snapshot captured at enqueue time, not an
+  /// arbitrary alias. Re-resolving and silently REBINDING root would allow an
+  /// attacker to replace the root with a junction before a queued task starts.
+  static Future<void> validateDirectory(
+    String root,
+    String directory, {
+    p.Context? context,
+    Future<String> Function(String)? resolve,
+  }) async {
+    final paths = context ?? p.context;
+    final canonicalRoot = normalizePath(root, context: paths);
+    final expected = normalizePath(directory, context: paths);
+    if (!paths.equals(canonicalRoot, expected) &&
+        !paths.isWithin(canonicalRoot, expected)) {
+      throw FileSystemException('下载路径超出目标目录 (root=$canonicalRoot)', directory);
+    }
+    final resolvedRoot = await canonicalDirectory(
+      canonicalRoot,
+      context: paths,
+      resolve: resolve,
+    );
+    if (!paths.equals(resolvedRoot, canonicalRoot)) {
+      throw FileSystemException(
+        '下载根目录已被替换 (expected=$canonicalRoot; resolved=$resolvedRoot)',
+        root,
+      );
+    }
+    final relative = paths.relative(expected, from: canonicalRoot);
+    final resolved = await canonicalDirectory(
+      expected,
+      context: paths,
+      resolve: resolve,
+    );
+    if (!paths.equals(resolved, paths.join(canonicalRoot, relative))) {
+      throw FileSystemException(
+        '下载子目录不能是符号链接或联接 (expected=$expected; resolved=$resolved)',
+        directory,
+      );
     }
   }
 }

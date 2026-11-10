@@ -430,7 +430,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                       ],
                       const Divider(height: 1),
                       Expanded(
-                        child: Container(
+                        child: Material(
                           color: Theme.of(context).colorScheme.surface,
                           child: _buildBody(),
                         ),

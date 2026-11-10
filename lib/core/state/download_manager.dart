@@ -130,22 +130,37 @@ class DownloadManager extends ChangeNotifier {
   final Map<String, int> _generations = {};
 
   /// 添加下载任务（进入排队，由 [_schedule] 决定何时开始）
-  void add(
+  Future<void> add(
     CloudProvider provider,
     String remotePath,
     String localDir,
     String name, {
     String? root,
-  }) {
+  }) async {
+    final requestEpoch = epoch;
     if (safeLocalName(name) != name) {
       throw const FormatException('本地文件名未经安全处理');
+    }
+    // Legacy single-file callers may pass an 8.3/alias directory. Resolve it
+    // once at enqueue; explicitly supplied roots are already canonical snapshots.
+    final canonicalRoot =
+        root == null
+            ? await DownloadDestination.canonicalDirectory(localDir)
+            : DownloadDestination.normalizePath(root);
+    final canonicalDir =
+        root == null
+            ? canonicalRoot
+            : DownloadDestination.normalizePath(localDir);
+    await DownloadDestination.validateDirectory(canonicalRoot, canonicalDir);
+    if (requestEpoch != epoch) {
+      throw StateError('账号已切换，未添加下载任务');
     }
     final task = DownloadTask(
       id: '${DateTime.now().microsecondsSinceEpoch}-${_nextId++}',
       remotePath: remotePath,
       name: name,
-      localDir: localDir,
-      root: root ?? localDir,
+      localDir: canonicalDir,
+      root: canonicalRoot,
     );
     _providers[task.id] = provider;
     _generations[task.id] = 0;

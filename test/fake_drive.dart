@@ -14,6 +14,11 @@ class FakeDrive implements CloudProvider {
   final Set<String> downloadFailures = {};
   final List<String> downloaded = [];
   Completer<void>? gate;
+  final Map<String, Completer<void>> _started = {};
+
+  Future<void> started(String remotePath) =>
+      (_started.putIfAbsent(remotePath, () => Completer<void>())).future;
+
   int active = 0;
   int peak = 0;
   @override
@@ -43,6 +48,8 @@ class FakeDrive implements CloudProvider {
   }) async {
     active++;
     if (active > peak) peak = active;
+    final event = _started.putIfAbsent(remotePath, () => Completer<void>());
+    if (!event.isCompleted) event.complete();
     try {
       if (gate != null) await gate!.future;
       if (isCanceled?.call() ?? false) throw StateError('canceled');
@@ -74,7 +81,14 @@ Future<void> waitFor(DownloadManager manager, bool Function() condition) async {
 
   manager.addListener(listener);
   try {
-    await done.future.timeout(const Duration(seconds: 5));
+    await done.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        throw StateError(
+          'Timed out waiting for queue condition. ${taskDiagnostics(manager)}',
+        );
+      },
+    );
   } finally {
     manager.removeListener(listener);
   }
@@ -89,3 +103,25 @@ Future<void> finished(DownloadManager manager) => waitFor(
         t.status == DownloadStatus.paused,
   ),
 );
+
+String taskDiagnostics(DownloadManager manager) => manager.tasks
+    .map(
+      (t) =>
+          '${t.remotePath}: status=${t.status}, error=${t.error}, root=${t.root}, dir=${t.localDir}',
+    )
+    .join(' | ');
+
+Future<void> waitForDownloadStart(
+  FakeDrive drive,
+  DownloadManager manager,
+  String path,
+) => drive
+    .started(path)
+    .timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        throw StateError(
+          'Download never started: $path. ${taskDiagnostics(manager)}',
+        );
+      },
+    );

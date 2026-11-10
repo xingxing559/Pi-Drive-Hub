@@ -68,7 +68,7 @@ class FolderDownload {
         );
         if (canceled()) break;
         if (!item.isDir) {
-          manager.add(
+          await manager.add(
             provider,
             item.path,
             p.dirname(local),

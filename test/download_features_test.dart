@@ -17,7 +17,10 @@ void main() {
   late FakeDrive drive;
   late DownloadManager manager;
   setUp(() async {
-    temp = await Directory.systemTemp.createTemp('pi-download-test-');
+    final created = await Directory.systemTemp.createTemp('pi-download-test-');
+    temp = Directory(
+      await DownloadDestination.canonicalDirectory(created.path),
+    );
     drive = FakeDrive();
     manager = DownloadManager();
   });
@@ -266,10 +269,10 @@ void main() {
     'pause does not automatically resume when a later task finishes',
     () async {
       drive.gate = Completer<void>();
-      manager.add(drive, '/a', temp.path, 'a');
-      manager.add(drive, '/b', temp.path, 'b');
+      await manager.add(drive, '/a', temp.path, 'a');
+      await manager.add(drive, '/b', temp.path, 'b');
       final first = manager.tasks.first;
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await waitForDownloadStart(drive, manager, '/a');
       manager.pause(first.id);
       drive.gate!.complete();
       await waitFor(
@@ -289,9 +292,9 @@ void main() {
     () async {
       drive.gate = Completer<void>();
       for (final name in ['a', 'b', 'c']) {
-        manager.add(drive, '/$name', temp.path, name);
+        await manager.add(drive, '/$name', temp.path, name);
       }
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await waitForDownloadStart(drive, manager, '/a');
       manager.remove(manager.tasks.first.id);
       drive.gate!.complete();
       await finished(manager);
@@ -304,10 +307,10 @@ void main() {
     'cancel all while running does not double-release queue capacity',
     () async {
       drive.gate = Completer<void>();
-      manager.add(drive, '/old', temp.path, 'old');
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await manager.add(drive, '/old', temp.path, 'old');
+      await waitForDownloadStart(drive, manager, '/old');
       manager.cancelAll();
-      manager.add(drive, '/new', temp.path, 'new');
+      await manager.add(drive, '/new', temp.path, 'new');
       drive.gate!.complete();
       await finished(manager);
       expect(drive.peak, 1);
@@ -322,7 +325,9 @@ void main() {
         file: File(p.join(temp.path, 'settings.json')),
         defaultDirectory: temp.path,
       );
-      final chosen = p.join(temp.path, 'selected');
+      final chosenPath = p.join(temp.path, 'selected');
+      await Directory(chosenPath).create();
+      final chosen = await DownloadDestination.canonicalDirectory(chosenPath);
       await settings.setDirectory(chosen);
       drive.tree['/folder'] = [file('/folder/f.txt')];
       await FolderDownload(
@@ -346,9 +351,10 @@ void main() {
       manager.setMaxConcurrent(2);
       drive.gate = Completer<void>();
       for (final name in ['a', 'b', 'c', 'd']) {
-        manager.add(drive, '/$name', temp.path, name);
+        await manager.add(drive, '/$name', temp.path, name);
       }
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await waitForDownloadStart(drive, manager, '/a');
+      await waitForDownloadStart(drive, manager, '/b');
       expect(drive.active, 2);
       drive.gate!.complete();
       await finished(manager);
@@ -360,12 +366,14 @@ void main() {
     'file created after enqueue is not overwritten by a queued task',
     () async {
       drive.gate = Completer<void>();
-      manager.add(drive, '/blocking', temp.path, 'blocking');
-      manager.add(drive, '/target', temp.path, 'target');
+      await manager.add(drive, '/blocking', temp.path, 'blocking');
+      await manager.add(drive, '/target', temp.path, 'target');
       await File(p.join(temp.path, 'target')).writeAsString('external file');
       drive.gate!.complete();
       await finished(manager);
       expect(manager.tasks.last.status, DownloadStatus.failed);
+      expect(manager.tasks.last.error, contains('目标文件已存在'));
+      expect(manager.tasks.first.status, DownloadStatus.done);
       expect(
         await File(p.join(temp.path, 'target')).readAsString(),
         'external file',
@@ -378,8 +386,8 @@ void main() {
     () async {
       manager.setMaxConcurrent(2);
       drive.gate = Completer<void>();
-      manager.add(drive, '/a', temp.path, 'a');
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await manager.add(drive, '/a', temp.path, 'a');
+      await waitForDownloadStart(drive, manager, '/a');
       final task = manager.tasks.single;
       manager.pause(task.id);
       manager.resume(task.id);
@@ -389,6 +397,49 @@ void main() {
       expect(task.status, DownloadStatus.done);
       expect(drive.downloaded, ['/a']);
       expect(drive.peak, 1);
+    },
+  );
+  test(
+    'single-file enqueue canonicalizes the selected root alias once',
+    () async {
+      final real = await Directory(p.join(temp.path, 'real')).create();
+      final alias = Link(p.join(temp.path, 'chosen-alias'));
+      await alias.create(real.path);
+      await manager.add(drive, '/one.txt', alias.path, 'one.txt');
+      await finished(manager);
+      expect(
+        manager.tasks.single.root,
+        await DownloadDestination.canonicalDirectory(real.path),
+      );
+      expect(
+        manager.tasks.single.localDir,
+        await DownloadDestination.canonicalDirectory(real.path),
+      );
+      expect(
+        manager.tasks.single.status,
+        DownloadStatus.done,
+        reason: taskDiagnostics(manager),
+      );
+      expect(await File(p.join(real.path, 'one.txt')).exists(), isTrue);
+    },
+  );
+
+  test(
+    'queued target root replacement cannot redirect a file outside its snapshot',
+    () async {
+      drive.gate = Completer<void>();
+      await manager.add(drive, '/block', temp.path, 'block');
+      await waitForDownloadStart(drive, manager, '/block');
+      final target = await Directory(p.join(temp.path, 'target')).create();
+      final outside = await Directory(p.join(temp.path, 'outside')).create();
+      await manager.add(drive, '/secret.txt', target.path, 'secret.txt');
+      await target.rename(p.join(temp.path, 'original-target'));
+      await Link(target.path).create(outside.path);
+      drive.gate!.complete();
+      await finished(manager);
+      expect(manager.tasks.last.status, DownloadStatus.failed);
+      expect(manager.tasks.last.error, contains('下载根目录已被替换'));
+      expect(await File(p.join(outside.path, 'secret.txt')).exists(), isFalse);
     },
   );
 }
