@@ -11,6 +11,8 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 
+import '../../core/download/paginated_listing.dart';
+
 import 'quark_auth.dart';
 import 'quark_config.dart';
 
@@ -159,28 +161,32 @@ class QuarkApi {
   // ---------- 文件列表 ----------
 
   /// 列出目录（分页拉全）
-  Future<List<Map<String, dynamic>>> listDir(String pdirFid, {int pageSize = 50}) async {
-    final all = <Map<String, dynamic>>[];
-    var page = 1;
-    while (true) {
-      final json = await _get('/file/sort', query: {
-        'pdir_fid': pdirFid,
-        '_page': '$page',
-        '_size': '$pageSize',
-        '_fetch_total': '1',
-        '_fetch_sub_dirs': '0',
-        '_sort': 'file_type:asc,updated_at:desc',
-        '_fetch_full_path': '0',
-        'fetch_all_file': '1',
-      });
-      final data = json['data'] as Map<String, dynamic>?;
-      final list = (data?['list'] as List?) ?? const [];
-      all.addAll(list.cast<Map<String, dynamic>>());
-      final total = ((json['metadata'] as Map?)?['_total'] as num?)?.toInt() ?? 0;
-      if (all.length >= total || list.isEmpty) break;
-      page++;
-    }
-    return all;
+  Future<List<Map<String, dynamic>>> listDir(
+    String pdirFid, {
+    int pageSize = 50,
+  }) async {
+    return collectPages<Map<String, dynamic>>(
+      pageSize: pageSize,
+      identity: (item) => item['fid'].toString(),
+      fetch: (offset, limit) async {
+        final json = await _get(
+          '/file/sort',
+          query: {
+            'pdir_fid': pdirFid,
+            '_page': '${offset ~/ limit + 1}',
+            '_size': '$limit',
+            '_fetch_total': '1',
+            '_fetch_sub_dirs': '0',
+            '_sort': 'file_type:asc,updated_at:desc',
+            '_fetch_full_path': '0',
+            'fetch_all_file': '1',
+          },
+        );
+        final data = json['data'] as Map<String, dynamic>?;
+        return ((data?['list'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>();
+      },
+    );
   }
 
   // ---------- 文件操作 ----------

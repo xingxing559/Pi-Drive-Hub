@@ -15,6 +15,9 @@ import '../providers/pan123/pan123_provider.dart';
 import '../providers/quark/quark_provider.dart';
 import 'download_page.dart';
 import 'pi_logo.dart';
+import 'settings_page.dart';
+import '../core/download/folder_download.dart';
+import '../core/state/download_manager.dart';
 
 class FileBrowserPage extends StatefulWidget {
   final AppState appState;
@@ -30,6 +33,9 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   String _currentPath = '/';
   List<CloudFile>? _files;
   String? _error;
+  bool _scanning = false;
+  bool _cancelScan = false;
+  int _scannedFiles = 0;
 
   // 搜索状态
   bool _searchMode = false;
@@ -89,7 +95,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   /// 搜索（按网盘类型分发；不支持搜索的返回空）
-  Future<List<CloudFile>> _searchFiles(CloudProvider provider, String kw) async {
+  Future<List<CloudFile>> _searchFiles(
+    CloudProvider provider,
+    String kw,
+  ) async {
     if (provider is BaiduClientProvider) {
       return provider.search(kw);
     }
@@ -134,18 +143,22 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     if (_selectedPaths.isEmpty) return;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(AppStrings.batchDeleteTitle),
-        content: Text(AppStrings.batchDeleteContent(_selectedPaths.length)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(AppStrings.cancel)),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(AppStrings.batchDeleteTitle),
+            content: Text(AppStrings.batchDeleteContent(_selectedPaths.length)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(AppStrings.cancel),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('删除'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (ok != true) return;
     try {
@@ -168,15 +181,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
 
   /// 批量下载
   Future<void> _batchDownload() async {
-    final dir = await FilePicker.platform.getDirectoryPath();
-    if (dir == null) return;
-    for (final f in _allVisibleFiles) {
-      if (_selectedPaths.contains(f.path) && !f.isDir) {
-        widget.appState.downloadManager.add(provider, f.path, dir, f.name);
-      }
-    }
-    _toast(AppStrings.addedToDownload(_selectedPaths.length));
+    final selected =
+        _allVisibleFiles.where((f) => _selectedPaths.contains(f.path)).toList();
     _exitSelection();
+    await _enqueueDownloads(selected);
   }
 
   /// 当前展示的所有文件（目录浏览或搜索结果）
@@ -189,21 +197,25 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     final controller = TextEditingController();
     final name = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(AppStrings.newFolder),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '文件夹名称'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(AppStrings.cancel)),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: Text(AppStrings.create),
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(AppStrings.newFolder),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(hintText: '文件夹名称'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(AppStrings.cancel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+                child: Text(AppStrings.create),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (name == null || name.isEmpty) return;
     try {
@@ -228,29 +240,102 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   }
 
   Future<void> _download(CloudFile file) async {
-    if (file.isDir) return;
-    final dir = await FilePicker.platform.getDirectoryPath();
-    if (dir == null) return;
-    // 交给下载管理器：后台下载 + 实时进度
-    widget.appState.downloadManager.add(provider, file.path, dir, file.name);
-    _toast(AppStrings.addedToDownloadQueue);
+    await _enqueueDownloads([file]);
   }
+
+  Future<void> _enqueueDownloads(List<CloudFile> files) async {
+    if (_scanning) {
+      _toast('正在扫描文件夹，请稍候');
+      return;
+    }
+    setState(() {
+      _scanning = true;
+      _cancelScan = false;
+      _scannedFiles = 0;
+    });
+    try {
+      final result = await FolderDownload(
+        widget.appState.downloadManager,
+      ).enqueue(
+        provider,
+        files,
+        widget.appState.downloadSettings.directory,
+        isCanceled: () => !mounted || _cancelScan,
+        onProgress: (progress) {
+          if (mounted) setState(() => _scannedFiles = progress.files);
+        },
+      );
+      if (!mounted) return;
+      _toast(
+        '${result.canceled ? '已停止扫描，' : ''}已加入 ${result.files} 个文件，创建 ${result.folders} 个目录',
+      );
+      if (result.errors.isNotEmpty) {
+        await showDialog<void>(
+          context: context,
+          builder:
+              (ctx) => AlertDialog(
+                title: Text('有 ${result.errors.length} 项未能加入下载'),
+                content: SizedBox(
+                  width: 560,
+                  child: SingleChildScrollView(
+                    child: SelectableText(result.errors.join('\n\n')),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('知道了'),
+                  ),
+                ],
+              ),
+        );
+      }
+    } catch (e) {
+      _toast('无法创建下载任务：$e');
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  void _openSettings() => Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => SettingsPage(settings: widget.appState.downloadSettings),
+    ),
+  );
+
+  void _openTransfers() => Navigator.of(context).push(
+    MaterialPageRoute(
+      builder:
+          (_) => DownloadPage(
+            manager: widget.appState.downloadManager,
+            uploadManager: widget.appState.uploadManager,
+            provider: provider,
+            vipType: widget.appState.account?.vipType ?? 0,
+          ),
+    ),
+  );
 
   Future<void> _rename(CloudFile file) async {
     final controller = TextEditingController(text: file.name);
     final newName = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(file.isDir ? AppStrings.renameFolder : AppStrings.renameFile),
-        content: TextField(controller: controller, autofocus: true),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(AppStrings.cancel)),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: Text(AppStrings.confirm),
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(
+              file.isDir ? AppStrings.renameFolder : AppStrings.renameFile,
+            ),
+            content: TextField(controller: controller, autofocus: true),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(AppStrings.cancel),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+                child: Text(AppStrings.confirm),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (newName == null || newName.isEmpty || newName == file.name) return;
     try {
@@ -264,18 +349,22 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   Future<void> _delete(CloudFile file) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(AppStrings.deleteTitle),
-        content: Text(AppStrings.deleteContent(file.name)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(AppStrings.cancel)),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(AppStrings.deleteTitle),
+            content: Text(AppStrings.deleteContent(file.name)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(AppStrings.cancel),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('删除'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (ok != true) return;
     try {
@@ -290,33 +379,165 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+      ..showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      );
   }
 
   // ---- UI ----
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (_selectionMode)
-              _buildSelectionBar()
-            else if (_searchMode)
-              _buildSearchBar()
-            else ...[
-              _buildTopBar(),
-              _buildBreadcrumb(),
-            ],
-            const Divider(height: 1),
-            Expanded(child: _buildBody()),
-          ],
-        ),
-      ),
-      bottomNavigationBar: _searchMode ? null : buildBottomBar(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final wide = constraints.maxWidth >= 900;
+        return Scaffold(
+          body: SafeArea(
+            child: Row(
+              children: [
+                if (wide) _buildSidebar(),
+                Expanded(
+                  child: Column(
+                    children: [
+                      if (_selectionMode)
+                        _buildSelectionBar()
+                      else if (_searchMode)
+                        _buildSearchBar()
+                      else ...[
+                        _buildTopBar(),
+                        _buildBreadcrumb(),
+                      ],
+                      if (_scanning) ...[
+                        const LinearProgressIndicator(minHeight: 2),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 4,
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text('正在扫描文件夹 · 已加入 $_scannedFiles 个文件'),
+                              ),
+                              TextButton(
+                                onPressed:
+                                    () => setState(() => _cancelScan = true),
+                                child: const Text('停止扫描'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const Divider(height: 1),
+                      Expanded(
+                        child: Container(
+                          color: Theme.of(context).colorScheme.surface,
+                          child: _buildBody(),
+                        ),
+                      ),
+                      if (!_searchMode) buildBottomBar(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
+
+  Widget _buildSidebar() => Container(
+    width: 216,
+    padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+    decoration: BoxDecoration(
+      border: Border(
+        right: BorderSide(
+          color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
+        ),
+      ),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(left: 12, bottom: 32),
+          child: Row(
+            children: [
+              PiLogo(size: 32),
+              SizedBox(width: 12),
+              Text(
+                'PI 网盘',
+                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.only(left: 16, bottom: 12),
+          child: Text(
+            '工作空间',
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
+        ),
+        ListTile(
+          selected: true,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          selectedTileColor: Theme.of(
+            context,
+          ).colorScheme.primaryContainer.withValues(alpha: 0.6),
+          leading: const Icon(Icons.folder_outlined),
+          title: const Text('全部文件'),
+          onTap: () {
+            _exitSearch();
+            _exitSelection();
+            _goTo('/');
+          },
+        ),
+        const SizedBox(height: 8),
+        ListenableBuilder(
+          listenable: widget.appState.downloadManager,
+          builder: (context, _) {
+            final active =
+                widget.appState.downloadManager.tasks
+                    .where(
+                      (t) =>
+                          t.status == DownloadStatus.downloading ||
+                          t.status == DownloadStatus.queued,
+                    )
+                    .length;
+            return ListTile(
+              leading: const Icon(Icons.swap_vert_rounded),
+              title: const Text('传输中心'),
+              trailing: active == 0 ? null : Badge(label: Text('$active')),
+              onTap: _openTransfers,
+            );
+          },
+        ),
+        const Spacer(),
+        ListTile(
+          leading: const Icon(Icons.settings_outlined),
+          title: const Text('设置'),
+          onTap: _openSettings,
+        ),
+        const Divider(),
+        ListTile(
+          leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+          title: Text(
+            widget.appState.account?.displayName ?? provider.displayName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: Text(
+            provider.displayName,
+            style: const TextStyle(fontSize: 12),
+          ),
+        ),
+      ],
+    ),
+  );
 
   /// 多选模式顶栏
   Widget _buildSelectionBar() {
@@ -324,10 +545,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: _exitSelection,
-          ),
+          IconButton(icon: const Icon(Icons.close), onPressed: _exitSelection),
           Text(
             AppStrings.selectedCount(_selectedPaths.length),
             style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
@@ -370,21 +588,24 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(24),
                 ),
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
               ),
               onSubmitted: (_) => _doSearch(),
               textInputAction: TextInputAction.search,
             ),
           ),
           IconButton(
-            icon: _searching
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.search),
+            icon:
+                _searching
+                    ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                    : const Icon(Icons.search),
             onPressed: _doSearch,
           ),
         ],
@@ -400,28 +621,48 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         children: [
           const PiLogo(size: 28),
           const SizedBox(width: 8),
-          Text(provider.displayName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+          Text(
+            provider.displayName,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
           const SizedBox(width: 16),
           if (account != null && account.quotaText.isNotEmpty)
-            Text(account.quotaText, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Flexible(
+              child: Text(
+                account.quotaText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
           const SizedBox(width: 12),
           if (account != null && account.vipType != null)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
-                color: account.vipType! >= 2
-                    ? const Color(0xFFFFB300)
-                    : (account.vipType! == 1
-                        ? const Color(0xFFFF7043)
-                        : const Color(0xFF9E9E9E)),
+                color:
+                    account.vipType! >= 2
+                        ? const Color(0xFFFFB300)
+                        : (account.vipType! == 1
+                            ? const Color(0xFFFF7043)
+                            : const Color(0xFF9E9E9E)),
                 borderRadius: BorderRadius.circular(4),
               ),
               child: Text(
                 account.vipText,
-                style: const TextStyle(fontSize: 11, color: Colors.white, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: Colors.white,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ),
           const Spacer(),
+          IconButton(
+            tooltip: '多选文件',
+            icon: const Icon(Icons.checklist_outlined),
+            onPressed: () => setState(() => _selectionMode = true),
+          ),
           IconButton(
             tooltip: AppStrings.search,
             icon: const Icon(Icons.search),
@@ -435,32 +676,30 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
           IconButton(
             tooltip: AppStrings.downloadManager,
             icon: const Icon(Icons.download),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => DownloadPage(
-                    manager: widget.appState.downloadManager,
-                    uploadManager: widget.appState.uploadManager,
-                    provider: provider,
-                    vipType: widget.appState.account?.vipType ?? 0,
-                  ),
-                ),
-              );
-            },
+            onPressed: _openTransfers,
           ),
           IconButton(
             tooltip: AppStrings.refresh,
             icon: const Icon(Icons.refresh),
             onPressed: _load,
           ),
+          IconButton(
+            tooltip: '设置',
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: _openSettings,
+          ),
           PopupMenuButton<String>(
             tooltip: AppStrings.more,
             onSelected: (v) {
               if (v == 'logout') widget.appState.logout();
             },
-            itemBuilder: (_) => [
-              PopupMenuItem(value: 'logout', child: Text(AppStrings.logout)),
-            ],
+            itemBuilder:
+                (_) => [
+                  PopupMenuItem(
+                    value: 'logout',
+                    child: Text(AppStrings.logout),
+                  ),
+                ],
           ),
         ],
       ),
@@ -480,7 +719,10 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             _crumb(AppStrings.allFiles, () => _goTo('/')),
             for (var i = 0; i < segs.length; i++) ...[
               const Icon(Icons.chevron_right, size: 16, color: Colors.grey),
-              _crumb(segs[i], () => _goTo('/${segs.sublist(0, i + 1).join('/')}')),
+              _crumb(
+                segs[i],
+                () => _goTo('/${segs.sublist(0, i + 1).join('/')}'),
+              ),
             ],
           ],
         ),
@@ -512,23 +754,35 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       final results = _searchResults;
       if (results == null) {
         return Center(
-            child: Text(AppStrings.searchEmptyHint, style: TextStyle(color: Colors.grey)));
+          child: Text(
+            AppStrings.searchEmptyHint,
+            style: TextStyle(color: Colors.grey),
+          ),
+        );
       }
       if (results.isEmpty) {
         return Center(
-            child: Text(AppStrings.searchNoResult, style: TextStyle(color: Colors.grey)));
+          child: Text(
+            AppStrings.searchNoResult,
+            style: TextStyle(color: Colors.grey),
+          ),
+        );
       }
       return _buildFileList(results);
     }
     if (_error != null) {
-      return Center(child: Text(_error!, style: const TextStyle(color: Colors.red)));
+      return Center(
+        child: Text(_error!, style: const TextStyle(color: Colors.red)),
+      );
     }
     final files = _files;
     if (files == null) {
       return const Center(child: CircularProgressIndicator());
     }
     if (files.isEmpty) {
-      return Center(child: Text(AppStrings.dirEmpty, style: TextStyle(color: Colors.grey)));
+      return Center(
+        child: Text(AppStrings.dirEmpty, style: TextStyle(color: Colors.grey)),
+      );
     }
     return _buildFileList(files);
   }
@@ -536,7 +790,7 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   /// 文件列表（目录浏览和搜索结果共用）
   Widget _buildFileList(List<CloudFile> files) {
     return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       itemCount: files.length,
       separatorBuilder: (_, __) => const Divider(height: 1, indent: 64),
       itemBuilder: (context, i) {
@@ -544,18 +798,27 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
         final selected = _selectedPaths.contains(f.path);
         return ListTile(
           selected: _selectionMode && selected,
-          leading: _selectionMode
-              ? Icon(
-                  selected
-                      ? Icons.check_circle
-                      : Icons.radio_button_unchecked,
-                  color: selected
-                      ? kBrandColor
-                      : Colors.grey,
-                )
-              : _iconFor(f),
-          title: Text(f.name),
-          subtitle: f.isDir ? null : Text(f.sizeText),
+          leading:
+              _selectionMode
+                  ? Icon(
+                    selected
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    color: selected ? kBrandColor : Colors.grey,
+                  )
+                  : _iconFor(f),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 4,
+          ),
+          title: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(
+            f.isDir ? '文件夹' : f.sizeText,
+            style: const TextStyle(fontSize: 12),
+          ),
           onTap: () {
             if (_selectionMode) {
               _toggleSelection(f);
@@ -564,25 +827,48 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             }
           },
           onLongPress: () => _toggleSelection(f),
-          trailing: _selectionMode
-              ? null
-              : PopupMenuButton<String>(
-            onSelected: (v) {
-              switch (v) {
-                case 'download':
-                  _download(f);
-                case 'rename':
-                  _rename(f);
-                case 'delete':
-                  _delete(f);
-              }
-            },
-            itemBuilder: (_) => [
-              if (!f.isDir) PopupMenuItem(value: 'download', child: Text(AppStrings.download)),
-              PopupMenuItem(value: 'rename', child: Text(AppStrings.rename)),
-              PopupMenuItem(value: 'delete', child: Text(AppStrings.delete)),
-            ],
-          ),
+          trailing:
+              _selectionMode
+                  ? null
+                  : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: f.isDir ? '下载整个文件夹' : '下载',
+                        onPressed: _scanning ? null : () => _download(f),
+                        icon: const Icon(Icons.download_outlined, size: 20),
+                      ),
+                      PopupMenuButton<String>(
+                        onSelected: (v) {
+                          switch (v) {
+                            case 'download':
+                              _download(f);
+                            case 'rename':
+                              _rename(f);
+                            case 'delete':
+                              _delete(f);
+                          }
+                        },
+                        itemBuilder:
+                            (_) => [
+                              PopupMenuItem(
+                                value: 'download',
+                                child: Text(
+                                  f.isDir ? '下载整个文件夹' : AppStrings.download,
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'rename',
+                                child: Text(AppStrings.rename),
+                              ),
+                              PopupMenuItem(
+                                value: 'delete',
+                                child: Text(AppStrings.delete),
+                              ),
+                            ],
+                      ),
+                    ],
+                  ),
         );
       },
     );

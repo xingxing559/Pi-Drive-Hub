@@ -26,3 +26,8 @@ linter:
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options
+
+# mac/ is a separate Flutter package (with its own pubspec and tests).
+analyzer:
+  exclude:
+    - mac/**

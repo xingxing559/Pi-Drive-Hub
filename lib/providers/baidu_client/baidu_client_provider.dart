@@ -140,12 +140,13 @@ class BaiduClientProvider implements CloudProvider {
   Future<void> download(
     String remotePath,
     String localDir, {
+    String? localName,
     TransferProgress? onProgress,
     bool Function()? isCanceled,
     Set<int>? completedBlocks,
     void Function(int, Set<int>)? onBlocks,
   }) async {
-    final name = remotePath.split('/').last;
+    final name = localName ?? remotePath.split('/').last;
     final localPath = '$localDir/$name';
     await api.download(remotePath, localPath,
         onProgress: onProgress,

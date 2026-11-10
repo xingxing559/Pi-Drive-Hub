@@ -8,6 +8,7 @@ import '../providers/cloud_provider.dart';
 import '../providers/provider_registry.dart';
 import 'download_manager.dart';
 import 'upload_manager.dart';
+import '../settings/download_settings.dart';
 
 class AppState extends ChangeNotifier {
   /// 下载任务管理器
@@ -16,7 +17,9 @@ class AppState extends ChangeNotifier {
   /// 上传任务管理器
   final UploadManager uploadManager = UploadManager();
 
-  AppState() {
+  final DownloadSettings downloadSettings;
+
+  AppState({required this.downloadSettings}) {
     setupDefaultProviders();
   }
 
@@ -77,4 +80,3 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 }
-

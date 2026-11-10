@@ -135,32 +135,50 @@ class Pan123Api {
   Future<List<Pan123File>> listDir(int parentId, {int pageSize = 100}) async {
     final files = <Pan123File>[];
     var page = 1;
-    while (true) {
-      final json = await _get('/file/list/new', query: {
-        'driveId': '0',
-        'limit': '$pageSize',
-        'next': '0',
-        'orderBy': 'file_id',
-        'orderDirection': 'desc',
-        'parentFileId': '$parentId',
-        'trashed': 'false',
-        'SearchData': '',
-        'Page': '$page',
-        'OnlyLookAbnormalFile': '0',
-        'event': 'homeListFile',
-        'operateType': '4',
-        'inDirectSpace': 'false',
-      });
+    var cursor = '0';
+    final seen = <int>{};
+    while (page <= 10000) {
+      final json = await _get(
+        '/file/list/new',
+        query: {
+          'driveId': '0',
+          'limit': '$pageSize',
+          'next': cursor,
+          'orderBy': 'file_id',
+          'orderDirection': 'desc',
+          'parentFileId': '$parentId',
+          'trashed': 'false',
+          'SearchData': '',
+          'Page': '$page',
+          'OnlyLookAbnormalFile': '0',
+          'event': 'homeListFile',
+          'operateType': '4',
+          'inDirectSpace': 'false',
+        },
+      );
       final data = json['data'] as Map<String, dynamic>?;
       final list = (data?['InfoList'] as List?) ?? const [];
+      var added = 0;
       for (final item in list) {
-        files.add(Pan123File.fromJson(item as Map<String, dynamic>));
+        final file = Pan123File.fromJson(item as Map<String, dynamic>);
+        if (seen.add(file.fileId)) {
+          files.add(file);
+          added++;
+        }
       }
-      final next = (data?['Next'] as String?) ?? '-1';
-      if (list.isEmpty || next == '-1') break;
+      if (list.isNotEmpty && added == 0) {
+        throw Pan123ApiException(-1, '网盘重复返回同一页，无法完整读取目录');
+      }
+      final next = data?['Next']?.toString();
+      if (list.isEmpty ||
+          next == '-1' ||
+          (next == null && list.length < pageSize)) {
+        return files;
+      }
+      cursor = next ?? '0';
       page++;
     }
-    return files;
+    throw Pan123ApiException(-1, '目录分页超出安全上限');
   }
 
   /// 搜索（123 无全盘搜索接口，用列表的 SearchData 参数，从根目录递归匹配）

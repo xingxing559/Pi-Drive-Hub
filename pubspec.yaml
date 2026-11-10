@@ -14,6 +14,7 @@ dependencies:
   http: ^1.2.2
   # token 等敏感信息安全存储（Windows 用 DPAPI 加密）
   flutter_secure_storage: ^9.2.2
+  path: ^1.9.1
   # 获取系统本地目录
   path_provider: ^2.1.4
   # 本地文件选择（上传/下载目录）

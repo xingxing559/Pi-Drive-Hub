@@ -153,13 +153,14 @@ class QuarkProvider implements CloudProvider {
   Future<void> download(
     String remotePath,
     String localDir, {
+    String? localName,
     TransferProgress? onProgress,
     bool Function()? isCanceled,
     Set<int>? completedBlocks,
     void Function(int, Set<int>)? onBlocks,
   }) async {
     final fid = await _resolveFid(remotePath);
-    final name = remotePath.split('/').last;
+    final name = localName ?? remotePath.split('/').last;
     await api.download(fid, '$localDir/$name',
         onProgress: onProgress,
         isCanceled: isCanceled,

@@ -43,10 +43,11 @@ abstract class CloudProvider {
     TransferProgress? onProgress,
   });
 
-  /// 下载网盘文件到本地目录
+  /// 下载网盘文件到本地目录，localName 为已校验的本地文件名
   Future<void> download(
     String remotePath,
     String localDir, {
+    String? localName,
     TransferProgress? onProgress,
     bool Function()? isCanceled,
     Set<int>? completedBlocks,

@@ -12,6 +12,8 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 
+import '../../core/download/paginated_listing.dart';
+
 import 'baidu_client_config.dart';
 import 'baidu_client_auth.dart';
 import 'cookie_jar.dart';
@@ -168,18 +170,26 @@ class BaiduClientApi {
 
   // ---------- 文件列表 ----------
 
-  Future<List<Map<String, dynamic>>> listDir(String path) async {
-    // 注意：该 xpan 接口不接受 order 参数（会返回 errno=2），
-    // 排序由上层在客户端本地完成
-    final json = await _get('${BaiduClientConfig.panBase}/rest/2.0/xpan/file', query: {
-      'method': 'list',
-      'app_id': BaiduClientConfig.appId,
-      'dir': path, // 注意：该接口用 dir 参数（path 会被忽略，永远返回根目录）
-      'by': 'name',
-    });
-    _checkErrno(json);
-    final list = (json['list'] as List?) ?? const [];
-    return list.cast<Map<String, dynamic>>();
+  Future<List<Map<String, dynamic>>> listDir(String path) {
+    return collectPages<Map<String, dynamic>>(
+      identity: (item) => (item['fs_id'] ?? item['path']).toString(),
+      fetch: (offset, limit) async {
+        final json = await _get(
+          '${BaiduClientConfig.panBase}/rest/2.0/xpan/file',
+          query: {
+            'method': 'list',
+            'app_id': BaiduClientConfig.appId,
+            'dir': path,
+            'by': 'name',
+            'start': '$offset',
+            'limit': '$limit',
+          },
+        );
+        _checkErrno(json);
+        return ((json['list'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>();
+      },
+    );
   }
 
   // ---------- 管理操作 ----------

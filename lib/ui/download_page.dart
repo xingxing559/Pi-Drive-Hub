@@ -37,12 +37,13 @@ class _DownloadPageState extends State<DownloadPage> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('传输管理'),
+          title: const Text('传输中心'),
           actions: [
             TextButton(
-              onPressed: _tab == 0
-                  ? widget.manager.clearFinished
-                  : widget.uploadManager.clearFinished,
+              onPressed:
+                  _tab == 0
+                      ? widget.manager.clearFinished
+                      : widget.uploadManager.clearFinished,
               child: Text(AppStrings.clearFinished),
             ),
           ],
@@ -56,13 +57,14 @@ class _DownloadPageState extends State<DownloadPage> {
         ),
         body: Column(
           children: [
-            if (_tab == 0) _buildConcurrencyBar(),
+            if (_tab == 0)
+              ListenableBuilder(
+                listenable: widget.manager,
+                builder: (_, __) => _buildConcurrencyBar(),
+              ),
             Expanded(
               child: TabBarView(
-                children: [
-                  _buildDownloadList(),
-                  _buildUploadList(),
-                ],
+                children: [_buildDownloadList(), _buildUploadList()],
               ),
             ),
           ],
@@ -83,17 +85,25 @@ class _DownloadPageState extends State<DownloadPage> {
           const SizedBox(width: 12),
           IconButton(
             icon: const Icon(Icons.remove_circle_outline, size: 20),
-            onPressed: widget.manager.maxConcurrent > 1
-                ? () => widget.manager.setMaxConcurrent(widget.manager.maxConcurrent - 1)
-                : null,
+            onPressed:
+                widget.manager.maxConcurrent > 1
+                    ? () => widget.manager.setMaxConcurrent(
+                      widget.manager.maxConcurrent - 1,
+                    )
+                    : null,
           ),
-          Text('${widget.manager.maxConcurrent}',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          Text(
+            '${widget.manager.maxConcurrent}',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
           IconButton(
             icon: const Icon(Icons.add_circle_outline, size: 20),
-            onPressed: widget.manager.maxConcurrent < maxAllowed
-                ? () => widget.manager.setMaxConcurrent(widget.manager.maxConcurrent + 1)
-                : null,
+            onPressed:
+                widget.manager.maxConcurrent < maxAllowed
+                    ? () => widget.manager.setMaxConcurrent(
+                      widget.manager.maxConcurrent + 1,
+                    )
+                    : null,
           ),
           const Spacer(),
           Text(
@@ -111,7 +121,11 @@ class _DownloadPageState extends State<DownloadPage> {
       builder: (context, _) {
         if (widget.manager.tasks.isEmpty) {
           return Center(
-              child: Text(AppStrings.noDownloadTasks, style: TextStyle(color: Colors.grey)));
+            child: Text(
+              AppStrings.noDownloadTasks,
+              style: TextStyle(color: Colors.grey),
+            ),
+          );
         }
         // 排序：下载中/排队在前，已完成/失败沉底，方便操作
         widget.manager.sortTasks();
@@ -124,7 +138,9 @@ class _DownloadPageState extends State<DownloadPage> {
             return _TaskCard(
               task: task,
               onPauseResume: () {
-                if (task.status == DownloadStatus.paused) {
+                if (task.status == DownloadStatus.failed) {
+                  widget.manager.retry(task.id);
+                } else if (task.status == DownloadStatus.paused) {
                   widget.manager.resume(task.id);
                 } else {
                   widget.manager.pause(task.id);
@@ -144,7 +160,11 @@ class _DownloadPageState extends State<DownloadPage> {
       builder: (context, _) {
         if (widget.uploadManager.tasks.isEmpty) {
           return Center(
-              child: Text(AppStrings.noUploadTasks, style: TextStyle(color: Colors.grey)));
+            child: Text(
+              AppStrings.noUploadTasks,
+              style: TextStyle(color: Colors.grey),
+            ),
+          );
         }
         return ListView.separated(
           padding: const EdgeInsets.all(16),
@@ -184,7 +204,8 @@ class _TaskCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final done = task.status == DownloadStatus.done;
-    final failed = task.status == DownloadStatus.failed ||
+    final failed =
+        task.status == DownloadStatus.failed ||
         task.status == DownloadStatus.canceled;
     final paused = task.status == DownloadStatus.paused;
     return Card(
@@ -201,11 +222,12 @@ class _TaskCard extends StatelessWidget {
                       : (failed
                           ? Icons.error
                           : (paused ? Icons.pause_circle : Icons.downloading)),
-                  color: done
-                      ? Colors.green
-                      : (failed
-                          ? Colors.red
-                          : (paused ? Colors.orange : kBrandColor)),
+                  color:
+                      done
+                          ? Colors.green
+                          : (failed
+                              ? Colors.red
+                              : (paused ? Colors.orange : kBrandColor)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -217,11 +239,20 @@ class _TaskCard extends StatelessWidget {
                   ),
                 ),
                 // 暂停/继续按钮
-                if (!done && !failed)
+                if (!done && task.status != DownloadStatus.canceled)
                   IconButton(
-                    tooltip: paused ? AppStrings.resume : AppStrings.pause,
+                    tooltip:
+                        failed
+                            ? '重试'
+                            : paused
+                            ? AppStrings.resume
+                            : AppStrings.pause,
                     icon: Icon(
-                      paused ? Icons.play_arrow : Icons.pause,
+                      failed
+                          ? Icons.refresh
+                          : paused
+                          ? Icons.play_arrow
+                          : Icons.pause,
                       size: 20,
                     ),
                     onPressed: onPauseResume,
@@ -233,6 +264,16 @@ class _TaskCard extends StatelessWidget {
                   onPressed: onDelete,
                 ),
               ],
+            ),
+            const SizedBox(height: 4),
+            Tooltip(
+              message: '${task.localDir}/${task.name}',
+              child: Text(
+                '${task.localDir}/${task.name}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
             ),
             const SizedBox(height: 8),
             if (task.status == DownloadStatus.downloading) ...[
@@ -289,7 +330,8 @@ class _UploadCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final done = task.status == UploadStatus.done;
-    final failed = task.status == UploadStatus.failed ||
+    final failed =
+        task.status == UploadStatus.failed ||
         task.status == UploadStatus.canceled;
     final paused = task.status == UploadStatus.paused;
     return Card(
@@ -306,11 +348,12 @@ class _UploadCard extends StatelessWidget {
                       : (failed
                           ? Icons.error
                           : (paused ? Icons.pause_circle : Icons.upload)),
-                  color: done
-                      ? Colors.green
-                      : (failed
-                          ? Colors.red
-                          : (paused ? Colors.orange : kBrandColor)),
+                  color:
+                      done
+                          ? Colors.green
+                          : (failed
+                              ? Colors.red
+                              : (paused ? Colors.orange : kBrandColor)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -323,9 +366,18 @@ class _UploadCard extends StatelessWidget {
                 ),
                 if (!done && !failed)
                   IconButton(
-                    tooltip: paused ? AppStrings.resume : AppStrings.pause,
+                    tooltip:
+                        failed
+                            ? '重试'
+                            : paused
+                            ? AppStrings.resume
+                            : AppStrings.pause,
                     icon: Icon(
-                      paused ? Icons.play_arrow : Icons.pause,
+                      failed
+                          ? Icons.refresh
+                          : paused
+                          ? Icons.play_arrow
+                          : Icons.pause,
                       size: 20,
                     ),
                     onPressed: onPauseResume,

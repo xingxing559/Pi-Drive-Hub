@@ -134,6 +134,7 @@ class Pan123Provider implements CloudProvider {
   Future<void> download(
     String remotePath,
     String localDir, {
+    String? localName,
     TransferProgress? onProgress,
     bool Function()? isCanceled,
     Set<int>? completedBlocks,
@@ -156,7 +157,7 @@ class Pan123Provider implements CloudProvider {
     if (m == null || m.isDir) {
       throw Pan123ApiException(-1, '无法获取文件信息: $remotePath');
     }
-    final name = remotePath.split('/').last;
+    final name = localName ?? remotePath.split('/').last;
     await api.download(m.fileId, m.etag, m.s3KeyFlag, m.size, m.type,
         '$localDir/$name',
         onProgress: onProgress,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'core/state/app_state.dart';
+import 'core/settings/download_settings.dart';
 import 'ui/app.dart';
 import 'ui/app_tray.dart';
 
@@ -12,6 +13,6 @@ void main() async {
   } catch (e) {
     debugPrint('[tray] init 失败: $e');
   }
-  final appState = AppState();
+  final appState = AppState(downloadSettings: await DownloadSettings.load());
   runApp(PiPanApp(appState: appState));
 }
